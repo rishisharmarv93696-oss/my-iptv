@@ -16,18 +16,101 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Save old playlist
+        run: |
+          if [ -f combined.m3u ]; then
+            cp combined.m3u old_combined.m3u
+          else
+            touch old_combined.m3u
+          fi
+
       - name: Download playlists
         run: |
-          curl -L https://iptv-org.github.io/iptv/languages/hin.m3u -o hindi.m3u
-          curl -L https://iptv-org.github.io/iptv/languages/bho.m3u -o bhojpuri.m3u
-          curl -L https://iptv-org.github.io/iptv/languages/pan.m3u -o punjabi.m3u
+          curl -L --fail https://iptv-org.github.io/iptv/languages/hin.m3u -o hindi.m3u
+          curl -L --fail https://iptv-org.github.io/iptv/languages/bho.m3u -o bhojpuri.m3u
+          curl -L --fail https://iptv-org.github.io/iptv/languages/pan.m3u -o punjabi.m3u
 
-      - name: Combine playlists
+      - name: Combine fresh playlists
         run: |
-          echo "#EXTM3U" > combined.m3u
-          grep -v '^#EXTM3U' hindi.m3u >> combined.m3u
-          grep -v '^#EXTM3U' bhojpuri.m3u >> combined.m3u
-          grep -v '^#EXTM3U' punjabi.m3u >> combined.m3u
+          echo "#EXTM3U" > fresh.m3u
+          grep -v '^#EXTM3U' hindi.m3u >> fresh.m3u
+          grep -v '^#EXTM3U' bhojpuri.m3u >> fresh.m3u
+          grep -v '^#EXTM3U' punjabi.m3u >> fresh.m3u
+
+      - name: Preserve previously available channels
+        run: |
+          python3 <<'PY'
+          import re
+
+          fresh = "fresh.m3u"
+          old = "old_combined.m3u"
+          output = "combined.m3u"
+
+          wanted = [
+              "Discovery",
+              "Discovery Hindi",
+              "Star Gold",
+              "Star Gold HD",
+              "Star Gold 2",
+              "Star Gold Select",
+              "Cartoon Network",
+              "Pogo",
+              "Zee Cinema",
+          ]
+
+          def read_entries(path):
+              try:
+                  lines = open(path, encoding="utf-8", errors="ignore").read().splitlines()
+              except FileNotFoundError:
+                  return []
+
+              entries = []
+              i = 0
+
+              while i < len(lines):
+                  if lines[i].startswith("#EXTINF"):
+                      if i + 1 < len(lines):
+                          entries.append((lines[i], lines[i + 1]))
+                          i += 2
+                          continue
+                  i += 1
+
+              return entries
+
+          fresh_entries = read_entries(fresh)
+          old_entries = read_entries(old)
+
+          result = list(fresh_entries)
+
+          # Existing channel names in fresh playlist
+          existing = set()
+
+          for info, url in result:
+              match = re.search(r',(.+)$', info)
+              if match:
+                  existing.add(match.group(1).strip().lower())
+
+          # Preserve selected channels from the previous playlist
+          # only when they are no longer present in the fresh source.
+          for info, url in old_entries:
+              match = re.search(r',(.+)$', info)
+              if not match:
+                  continue
+
+              name = match.group(1).strip()
+              lower_name = name.lower()
+
+              if any(w.lower() in lower_name for w in wanted):
+                  if lower_name not in existing:
+                      result.append((info, url))
+                      existing.add(lower_name)
+
+          with open(output, "w", encoding="utf-8") as f:
+              f.write("#EXTM3U\n")
+              for info, url in result:
+                  f.write(info + "\n")
+                  f.write(url + "\n")
+          PY
 
       - name: Commit updated playlist
         run: |
